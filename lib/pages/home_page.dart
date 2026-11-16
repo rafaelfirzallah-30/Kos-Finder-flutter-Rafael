@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../services/auth_service.dart';
 import '../services/kos_service.dart';
+import '../services/notification_service.dart';
 import '../services/profile_service.dart';
 import '../widgets/role_guard.dart';
 import 'login_page.dart';
@@ -21,6 +23,10 @@ class _HomePageState extends State<HomePage> {
   void initState() {
     super.initState();
     _refreshData();
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await NotificationService.instance.init();
+      await NotificationService.instance.setupInteractedMessage();
+    });
   }
 
   void _refreshData() {
@@ -100,6 +106,31 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  void _showTokenDialog() async {
+    final token = await NotificationService.instance.getToken() ?? 'Token belum tersedia';
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('FCM Device Token'),
+        content: SelectableText(token),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Clipboard.setData(ClipboardData(text: token));
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Token disalin ke clipboard!')),
+              );
+              Navigator.pop(ctx);
+            },
+            child: const Text('Salin'),
+          ),
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Tutup')),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final currentUserId = AuthService.instance.currentUser?.id ?? '';
@@ -122,6 +153,11 @@ class _HomePageState extends State<HomePage> {
           appBar: AppBar(
             title: Text('KosFinder (${p.role})'),
             actions: [
+              IconButton(
+                tooltip: 'Lihat FCM Token',
+                icon: const Icon(Icons.notifications_active),
+                onPressed: _showTokenDialog,
+              ),
               IconButton(
                 tooltip: 'Refresh',
                 icon: const Icon(Icons.refresh),
