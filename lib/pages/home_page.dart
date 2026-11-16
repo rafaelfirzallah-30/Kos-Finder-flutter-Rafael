@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../services/auth_service.dart';
+import '../services/kos_service.dart';
 import '../services/profile_service.dart';
 import '../widgets/role_guard.dart';
 import 'login_page.dart';
@@ -12,12 +13,21 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  late final Future<UserProfile?> _profileFuture;
+  late Future<UserProfile?> _profileFuture;
+  late Future<List<Map<String, dynamic>>> _kosFuture;
+  final KosService _kosService = KosService();
 
   @override
   void initState() {
     super.initState();
-    _profileFuture = ProfileService().getMyProfile();
+    _refreshData();
+  }
+
+  void _refreshData() {
+    setState(() {
+      _profileFuture = ProfileService().getMyProfile();
+      _kosFuture = _kosService.fetchAll();
+    });
   }
 
   Future<void> _logout() async {
@@ -29,8 +39,71 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  Future<void> _showAddKosDialog() async {
+    final nameC = TextEditingController();
+    final addrC = TextEditingController();
+    final priceC = TextEditingController();
+
+    await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Tambah Kos Baru'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(controller: nameC, decoration: const InputDecoration(labelText: 'Nama Kos')),
+            TextField(controller: addrC, decoration: const InputDecoration(labelText: 'Alamat')),
+            TextField(controller: priceC, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Harga (Rp)')),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Batal')),
+          FilledButton(
+            onPressed: () async {
+              if (nameC.text.isNotEmpty) {
+                final navigator = Navigator.of(ctx);
+                await _kosService.add(
+                  name: nameC.text.trim(),
+                  address: addrC.text.trim(),
+                  price: int.tryParse(priceC.text) ?? 0,
+                );
+                navigator.pop();
+                _refreshData();
+              }
+            },
+            child: const Text('Simpan'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _runSecurityTest(String targetKosId) async {
+    final updated = await _kosService.update(targetKosId, {'name': 'HACKED BY OTHER USER'});
+    final deleted = await _kosService.delete(targetKosId);
+
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Hasil Security Testing (RLS)'),
+        content: Text(
+          '1. Coba UPDATE data user lain:\n'
+          '   ${updated ? "FAIL (Berhasil diubah!)" : "PASS (Ditolak oleh RLS)"}\n\n'
+          '2. Coba DELETE data user lain:\n'
+          '   ${deleted ? "FAIL (Berhasil dihapus!)" : "PASS (Ditolak oleh RLS)"}',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK')),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final currentUserId = AuthService.instance.currentUser?.id ?? '';
+
     return FutureBuilder<UserProfile?>(
       future: _profileFuture,
       builder: (context, snap) {
@@ -50,47 +123,92 @@ class _HomePageState extends State<HomePage> {
             title: Text('KosFinder (${p.role})'),
             actions: [
               IconButton(
+                tooltip: 'Refresh',
+                icon: const Icon(Icons.refresh),
+                onPressed: _refreshData,
+              ),
+              IconButton(
                 tooltip: 'Logout',
                 icon: const Icon(Icons.logout),
                 onPressed: _logout,
               ),
             ],
           ),
-          // Menu yang tampil berbeda untuk tiap role
-          body: ListView(
-            children: [
-              ListTile(
-                leading: const Icon(Icons.person),
-                title: Text(p.name.isEmpty ? p.email : p.name),
-                subtitle: Text('${p.email} • ${p.role}'),
-              ),
-              const Divider(),
-              const ListTile(
-                leading: Icon(Icons.list),
-                title: Text('Daftar Kos'),
-              ),
-              if (p.isOwner || p.isAdmin)
-                const ListTile(
-                  leading: Icon(Icons.home_work),
-                  title: Text('My Kos'),
+          body: RefreshIndicator(
+            onRefresh: () async => _refreshData(),
+            child: ListView(
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.person),
+                  title: Text(p.name.isEmpty ? p.email : p.name),
+                  subtitle: Text('${p.email} • Role: ${p.role.toUpperCase()}'),
                 ),
-              if (p.isAdmin)
-                const ListTile(
-                  leading: Icon(Icons.admin_panel_settings),
-                  title: Text('Kelola Data (Admin)'),
+                const Divider(),
+                const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  child: Text('Daftar Kos Tersedia', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                 ),
-            ],
+                FutureBuilder<List<Map<String, dynamic>>>(
+                  future: _kosFuture,
+                  builder: (context, kosSnap) {
+                    if (kosSnap.connectionState != ConnectionState.done) {
+                      return const Center(child: Padding(padding: EdgeInsets.all(20), child: CircularProgressIndicator()));
+                    }
+                    final items = kosSnap.data ?? [];
+                    if (items.isEmpty) {
+                      return const Center(
+                        child: Padding(
+                          padding: EdgeInsets.all(20),
+                          child: Text('Belum ada data kos.'),
+                        ),
+                      );
+                    }
+                    return ListView.builder(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      itemCount: items.length,
+                      itemBuilder: (context, i) {
+                        final kos = items[i];
+                        final isMine = kos['owner_id'] == currentUserId;
+                        return Card(
+                          margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                          child: ListTile(
+                            leading: Icon(Icons.home, color: isMine ? Colors.green : Colors.grey),
+                            title: Text(kos['name'] ?? '-'),
+                            subtitle: Text('${kos['address'] ?? '-'} • Rp ${kos['price'] ?? 0}\n'
+                                'Owner: ${isMine ? "Milik Anda" : "User Lain"}'),
+                            trailing: isMine
+                                ? Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      IconButton(
+                                        icon: const Icon(Icons.delete, color: Colors.red),
+                                        onPressed: () async {
+                                          final ok = await _kosService.delete(kos['id']);
+                                          if (ok) _refreshData();
+                                        },
+                                      ),
+                                    ],
+                                  )
+                                : IconButton(
+                                    tooltip: 'Uji RLS (Bypass Test)',
+                                    icon: const Icon(Icons.security, color: Colors.orange),
+                                    onPressed: () => _runSecurityTest(kos['id']),
+                                  ),
+                          ),
+                        );
+                      },
+                    );
+                  },
+                ),
+              ],
+            ),
           ),
-          // Tombol "Tambah Kos" hanya untuk owner / admin
           floatingActionButton: RoleGuard(
             role: p.role,
             allowed: const ['owner', 'admin'],
             child: FloatingActionButton.extended(
-              onPressed: () {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Form Tambah Kos (Owner Only)')),
-                );
-              },
+              onPressed: _showAddKosDialog,
               icon: const Icon(Icons.add_home),
               label: const Text('Tambah Kos'),
             ),
