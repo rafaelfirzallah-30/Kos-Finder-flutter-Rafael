@@ -29,13 +29,44 @@ class ProfileService {
   final SupabaseClient _client = Supabase.instance.client;
 
   Future<UserProfile?> getMyProfile() async {
-    final user = _client.auth.currentUser; // currentUser
+    final user = _client.auth.currentUser;
     if (user == null) return null;
-    final data = await _client
-        .from('profiles')
-        .select()
-        .eq('id', user.id)
-        .maybeSingle();
-    return data == null ? null : UserProfile.fromMap(data); // currentUserRole
+
+    try {
+      final data = await _client
+          .from('profiles')
+          .select()
+          .eq('id', user.id)
+          .maybeSingle();
+
+      if (data != null) {
+        return UserProfile.fromMap(data);
+      }
+
+      // Jika profil belum ada di tabel, gunakan fallback & coba buatkan barisnya
+      final defaultRole = (user.userMetadata?['role'] as String?) ?? 'owner';
+      final defaultName = (user.userMetadata?['name'] as String?) ?? 'User';
+
+      final fallbackData = {
+        'id': user.id,
+        'email': user.email ?? '',
+        'name': defaultName,
+        'role': defaultRole,
+      };
+
+      try {
+        await _client.from('profiles').upsert(fallbackData);
+      } catch (_) {}
+
+      return UserProfile.fromMap(fallbackData);
+    } catch (_) {
+      // Fallback agar halaman tidak blank putih jika database sedang proses
+      return UserProfile(
+        id: user.id,
+        email: user.email ?? '',
+        name: (user.userMetadata?['name'] as String?) ?? 'User',
+        role: (user.userMetadata?['role'] as String?) ?? 'owner',
+      );
+    }
   }
 }
